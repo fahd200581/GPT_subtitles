@@ -1,10 +1,17 @@
 from abc import ABC, abstractmethod
 import whisper
 from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
-from googletrans import Translator
+from googletrans import Translator as GoogleTranslator
 import time
-from translate_gpt import translate_with_gpt
+from translate_gpt import translate_with_gemini
 from tqdm import tqdm
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def batch_text(result, gs=32):
     """split list into small groups of group size `gs`."""
@@ -17,7 +24,7 @@ def batch_text(result, gs=32):
     if mb * gs != length:
         text_batches.append([s['text'] for s in segs[mb * gs:length]])
     return text_batches
-        
+
 class ITranslationService(ABC):
     @abstractmethod
     def translate(self, text, src_lang, tr_lang):
@@ -27,7 +34,7 @@ class GoogleTranslateService(ITranslationService):
     def translate(self, result, src_lang='en', tr_lang='zh-cn'):
         if tr_lang == 'zh':
             tr_lang = 'zh-cn'
-        translator = Translator()
+        translator = GoogleTranslator()
         batch_texts = batch_text(result, gs=25)
         translated = []
         
@@ -66,3 +73,43 @@ class M2M100TranslateService(ITranslationService):
             translated += batch_translated
         return translated
 
+class GeminiTranslateService(ITranslationService):
+    def translate(self, result, src_lang='en', tr_lang='zh'):
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        translated = []
+        batch_texts = batch_text(result, gs=32)
+        
+        for texts in tqdm(batch_texts):
+            batch_translated = []
+            for text in texts:
+                response = model.generate_content(text)
+                batch_translated.append(response.text)
+            translated += batch_translated
+        return translated
+
+# Example usage
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Translate subtitles using different translation services")
+    parser.add_argument("input_file", type=str, help="Path to the input subtitle file")
+    parser.add_argument("output_file", type=str, help="Path to the output subtitle file")
+    parser.add_argument("service", type=str, choices=["google", "m2m100", "gemini"], help="Translation service to use")
+    parser.add_argument("-s", "--src_lang", type=str, default="en", help="Source language")
+    parser.add_argument("-t", "--tr_lang", type=str, default="zh", help="Target language")
+
+    args = parser.parse_args()
+
+    with open(args.input_file, 'r', encoding='utf-8') as f:
+        result = {'segments': [{'text': line.strip()} for line in f.readlines()]}
+
+    if args.service == "google":
+        service = GoogleTranslateService()
+    elif args.service == "m2m100":
+        service = M2M100TranslateService()
+    elif args.service == "gemini":
+        service = GeminiTranslateService()
+
+    translated_text = service.translate(result, src_lang=args.src_lang, tr_lang=args.tr_lang)
+
+    with open(args.output_file, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(translated_text))
